@@ -746,7 +746,7 @@ async function prefetchOne(url){
  delete PREFETCH_BUSY[url];
 }
 function pumpPrefetch(){
- while(prefRunning<4&&prefQueue.length){
+ while(prefRunning<6&&prefQueue.length){
   const u=prefQueue.shift();if(PREFETCH[u]||PREFETCH_BUSY[u])continue;
   prefRunning++;prefetchOne(u).finally(()=>{prefRunning--;pumpPrefetch()});
  }
@@ -773,8 +773,16 @@ function pumpMedia(){
 }
 function mediaDone(){
  return new Promise(res=>{
-  if(!mediaQueue.length&&!mediaRunning)return res();
-  mediaWaiters.push(res);
+  const chk=()=>{
+   let ok=0;for(let i=1;i<=45;i++)if(MEDIA[i])ok++;
+   if(ok===45)return res();
+   setTimeout(chk,300);
+  };chk();
+ });
+}
+function songDone(){
+ return new Promise(res=>{
+  const c=()=>window.__songReady?res():setTimeout(c,300);c();
  });
 }
 async function loadSong(){
@@ -785,11 +793,11 @@ async function loadSong(){
  }catch(e){setTimeout(loadSong,4000)}
 }
 function decodeAll(){
- const songTask=loadSong();              /* 原曲优先，解开即淡入 */
+ loadSong();                            /* 原曲优先，解开即淡入 */
  mediaQueue=[];
  for(let i=1;i<=45;i++)if(!MEDIA[i])mediaQueue.push(i);
  pumpMedia();
- return Promise.all([songTask,mediaDone()]);
+ return Promise.all([songDone(),mediaDone()]);
 }
 let memories=[]; /* 22 段故事加密在 assets/enc/stories.bin，开锁后注入 */
 /* 相册板块：严格按文档，其余板块暂不放照片 */
@@ -1157,10 +1165,13 @@ window.OrbitMusic=(function(){
    const storyBlob=await decRetry('assets/enc/stories.bin','application/json',15000);
    memories=JSON.parse(await storyBlob.text());
    renderStars();restore();
-   setMsg('正在点亮我们的星星…');
-   /* 关键：等 45 张照片 + 原曲全部解开后再放开画面；预取已命中时只需几百毫秒。
-      最多等 12 秒，任何单个文件出问题也不会把人卡在锁页，剩下的继续后台补载。 */
-   await Promise.race([decodeAll(),new Promise(r=>setTimeout(r,12000))]);
+   /* 关键：等 45 张照片 + 原曲全部解开、音乐起播后才放开画面，
+      锁页显示实时进度；任一文件失败只重试自己，绝不提前放出空白页面。 */
+   const prog=setInterval(()=>{
+    let ok=0;for(let i=1;i<=45;i++)if(MEDIA[i])ok++;
+    setMsg(ok>=45?'好啦，只属于我们的一年 ♥':'正在点亮我们的星星… '+ok+'/45');
+   },350);
+   try{await decodeAll()}finally{clearInterval(prog);setMsg('好啦，只属于我们的一年 ♥')}
    renderAlbumCovers();
    IntroFX.start();
    setTimeout(()=>{L.classList.add('gone');setTimeout(()=>L.remove(),1000)},380);
