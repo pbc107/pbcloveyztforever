@@ -697,21 +697,32 @@ const DEFAULT_DATE='2025-12-12';
 const FIXED_DAYS=365; /* 一周年固定 365 天，不按日期实时计算 */
 const MEDIA={},BLANK_IMG='data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 const purl=n=>MEDIA[n]||BLANK_IMG;
-/* 媒体加载：暗号一验证就放行，照片与音乐在开场动画期间全速就位；单个请求失败只重试自己，绝不阻塞进入 */
-let MEDIA_KEY=null,mediaQueue=[],mediaRunning=0;
-const MEDIA_PENDING=new Set();
+let MEDIA_KEY=null;
+/* 密文预取：页面一打开就静默下载到内存（纯密文、无密钥，不泄露任何内容）。
+   用户输暗号的那几秒里文件已备好，解锁后只剩解密，几乎瞬时。 */
+const PREFETCH={},PREFETCH_BUSY={};
+const ENC_URLS=(function(){
+ const a=['assets/enc/song.bin','assets/enc/stories.bin']; /* 原曲优先 */
+ for(let i=1;i<=45;i++)a.push('assets/enc/image'+i+'.bin');
+ return a;
+})();
+let prefQueue=[],prefRunning=0;
 function applyMedia(n){
  const u=MEDIA[n];if(!u)return;
  document.querySelectorAll('img[data-mid="'+n+'"]').forEach(im=>{if(im.src!==u)im.src=u});
 }
 function fetchBin(url,ms){
- const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),ms||30000);
+ const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),ms||45000);
  return fetch(url,{signal:ctrl.signal}).then(r=>{
   if(!r.ok)throw new Error('HTTP '+r.status);return r.arrayBuffer();
  }).finally(()=>clearTimeout(timer));
 }
+async function getBin(url,ms){
+ if(PREFETCH[url])return PREFETCH[url];
+ const ab=await fetchBin(url,ms||45000);PREFETCH[url]=ab;return ab;
+}
 async function decBin(url,mime,ms){
- const v=new Uint8Array(await fetchBin(url,ms||30000));
+ const v=new Uint8Array(await getBin(url,ms));
  const iv=v.slice(0,12),tag=v.slice(12,28),ct=v.slice(28);
  const data=new Uint8Array(ct.length+16);data.set(ct);data.set(tag,ct.length);
  const plain=await crypto.subtle.decrypt({name:'AES-GCM',iv:iv},MEDIA_KEY,data);
@@ -721,34 +732,64 @@ async function decRetry(url,mime,ms){
  let last;
  for(let a=0;a<4;a++){
   try{return await decBin(url,mime,ms)}
-  catch(e){last=e;if(e&&e.name==='OperationError')throw e;await new Promise(r=>setTimeout(r,450*(a+1)))}
+  catch(e){last=e;if(e&&e.name==='OperationError')throw e;await new Promise(r=>setTimeout(r,400*(a+1)))}
  }
  throw last||new Error('media failed');
 }
+async function prefetchOne(url){
+ if(PREFETCH[url]||PREFETCH_BUSY[url])return;
+ PREFETCH_BUSY[url]=1;
+ for(let a=0;a<3;a++){
+  try{PREFETCH[url]=await fetchBin(url,90000);break}
+  catch(e){await new Promise(r=>setTimeout(r,600*(a+1)))}
+ }
+ delete PREFETCH_BUSY[url];
+}
+function pumpPrefetch(){
+ while(prefRunning<4&&prefQueue.length){
+  const u=prefQueue.shift();if(PREFETCH[u]||PREFETCH_BUSY[u])continue;
+  prefRunning++;prefetchOne(u).finally(()=>{prefRunning--;pumpPrefetch()});
+ }
+}
+setTimeout(()=>{prefQueue=ENC_URLS.slice();pumpPrefetch()},120);
+
+/* 解锁后一次性解开全部媒体；限并发 + 独立重试，返回「全部就绪」的 Promise */
+let mediaQueue=[],mediaRunning=0,mediaWaiters=[];
+function mediaFinished(){
+ if(!mediaQueue.length&&!mediaRunning)mediaWaiters.splice(0).forEach(f=>f());
+}
 function pumpMedia(){
- while(mediaRunning<4&&mediaQueue.length){
+ while(mediaRunning<6&&mediaQueue.length){
   const n=mediaQueue.shift();
-  if(MEDIA[n]||MEDIA_PENDING.has(n))continue;
-  MEDIA_PENDING.add(n);mediaRunning++;
-  decRetry('assets/enc/image'+n+'.bin','image/jpeg',30000).then(blob=>{
+  if(MEDIA[n])continue;
+  mediaRunning++;
+  decRetry('assets/enc/image'+n+'.bin','image/jpeg',45000).then(blob=>{
    MEDIA[n]=URL.createObjectURL(blob);applyMedia(n);
   }).catch(()=>{
-   setTimeout(()=>{if(!MEDIA[n]&&!MEDIA_PENDING.has(n)){mediaQueue.unshift(n);pumpMedia()}},4000);
-  }).finally(()=>{MEDIA_PENDING.delete(n);mediaRunning--;pumpMedia()});
+   setTimeout(()=>{if(!MEDIA[n]){mediaQueue.push(n);pumpMedia()}},3000);
+  }).finally(()=>{mediaRunning--;pumpMedia();mediaFinished()});
  }
+ mediaFinished();
+}
+function mediaDone(){
+ return new Promise(res=>{
+  if(!mediaQueue.length&&!mediaRunning)return res();
+  mediaWaiters.push(res);
+ });
 }
 async function loadSong(){
  try{
-  const blob=await decRetry('assets/enc/song.bin','audio/mp4',60000);
+  const blob=await decRetry('assets/enc/song.bin','audio/mp4',90000);
   window.__songReady=true;
   if(window.OrbitMusic)OrbitMusic.startWith(URL.createObjectURL(blob));
- }catch(e){setTimeout(loadSong,6000)}
+ }catch(e){setTimeout(loadSong,4000)}
 }
-function loadAllMedia(){
- loadSong();                       /* 原曲优先，解开即自动淡入 */
+function decodeAll(){
+ const songTask=loadSong();              /* 原曲优先，解开即淡入 */
  mediaQueue=[];
  for(let i=1;i<=45;i++)if(!MEDIA[i])mediaQueue.push(i);
- pumpMedia();                      /* 45 张照片全速并发，解开一张回填一张 */
+ pumpMedia();
+ return Promise.all([songTask,mediaDone()]);
 }
 let memories=[]; /* 22 段故事加密在 assets/enc/stories.bin，开锁后注入 */
 /* 相册板块：严格按文档，其余板块暂不放照片 */
@@ -1112,14 +1153,17 @@ window.OrbitMusic=(function(){
   busy=true;go.disabled=true;setMsg('正在展开我们的回忆…');
   try{
    MEDIA_KEY=await derive(pass);
-   /* 只等 6.5KB 的 stories.bin 校验暗号，随后立刻放行 */
+   /* 先用 6.5KB 的 stories.bin 验证暗号 */
    const storyBlob=await decRetry('assets/enc/stories.bin','application/json',15000);
    memories=JSON.parse(await storyBlob.text());
-   renderStars();restore();renderAlbumCovers();
+   renderStars();restore();
+   setMsg('正在点亮我们的星星…');
+   /* 关键：等 45 张照片 + 原曲全部解开后再放开画面；预取已命中时只需几百毫秒。
+      最多等 12 秒，任何单个文件出问题也不会把人卡在锁页，剩下的继续后台补载。 */
+   await Promise.race([decodeAll(),new Promise(r=>setTimeout(r,12000))]);
+   renderAlbumCovers();
    IntroFX.start();
    setTimeout(()=>{L.classList.add('gone');setTimeout(()=>L.remove(),1000)},380);
-   /* 不 await：开场动画那几秒里把 45 张照片和原曲全速解开，失败自动重试，绝不影响进入 */
-   loadAllMedia();
   }catch(e){
    const wrong=e&&e.name==='OperationError';
    setMsg(wrong?'暗号不对哦，再想想～':'网络有点慢，再点一次解锁试试',true);
