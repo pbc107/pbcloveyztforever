@@ -735,38 +735,7 @@ async function decToBlob(url,mime,timeout,tries){
  }
  throw last;
 }
-/* 单段 Range 请求，带超时 */
-function fetchRange(url,s,e,timeout){
- const ctrl=new AbortController(),t=setTimeout(()=>ctrl.abort(),timeout||45000);
- return fetch(url,{headers:{Range:'bytes='+s+'-'+e},signal:ctrl.signal})
-  .then(r=>{if(r.status!==206)throw new Error('range '+r.status);return r.arrayBuffer()})
-  .finally(()=>clearTimeout(t));
-}
-/* 大文件分段并发下载：单连接很慢时显著提速，不支持 Range 则退回整段下载 */
-async function fetchSong(){
- const url='assets/enc/song.bin';
- try{
-  const head=await fetch(url,{headers:{Range:'bytes=0-0'}});
-  const cr=head.headers.get('Content-Range');
-  if(head.status!==206||!cr)throw new Error('no range');
-  const total=Number(cr.split('/')[1]);if(!(total>0))throw new Error('bad length');
-  const parts=6,chunk=Math.ceil(total/parts);
-  const bufs=await Promise.all(Array.from({length:parts},async(_,i)=>{
-   const s=i*chunk,e=Math.min(total-1,s+chunk-1);
-   if(s>=total)return new ArrayBuffer(0);
-   let last;
-   for(let k=0;k<3;k++){
-    try{return await fetchRange(url,s,e)}
-    catch(err){last=err;await new Promise(r=>setTimeout(r,500*(k+1)))}
-   }
-   throw last;
-  }));
-  const out=new Uint8Array(total);let off=0;
-  bufs.forEach(b=>{out.set(new Uint8Array(b),off);off+=b.byteLength});
-  if(off!==total)throw new Error('short read '+off+'/'+total);
-  return out.buffer;
- }catch(e){return await fetchBin(url,60000)}
-}
+/* 音频仍是单个大文件：独立下载，不与照片队列抢并发 */
 /* 全量补齐顺序：先首星、封面、各星首图，再其余 */
 function mediaOrder(){
  const order=[],seen=new Set();
@@ -810,7 +779,7 @@ function pumpRest(){
 }
 function loadSong(attempt){
  attempt=attempt||0;
- fetchSong().then(buf=>decryptBuffer(buf,'audio/mp4')).then(blob=>{
+ decToBlob('assets/enc/song.bin','audio/mp4',60000,1).then(blob=>{
   if(window.OrbitMusic)OrbitMusic.startWith(URL.createObjectURL(blob));
   pumpRest();
  }).catch(()=>{
@@ -825,8 +794,8 @@ function loadAllMedia(){
  memories.slice(0,3).forEach(m=>(m.photos||[]).forEach(push));
  albums.forEach(a=>(a.photos||[]).forEach(push));
  mediaQueue=first.filter(n=>!MEDIA[n]);pumpMedia();
- /* 音乐优先：先只下首屏几张图，音乐就绪后再补齐其余照片，避免抢带宽 */
- setTimeout(loadSong,700);
+ /* 先让首屏照片下完，再启动音乐，避免大文件占满连接 */
+ setTimeout(loadSong,3200);
  /* 兜底：音乐长时间下不来也别让照片一直缺 */
  setTimeout(pumpRest,22000);
 }
