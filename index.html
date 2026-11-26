@@ -8,6 +8,7 @@
    全部密文已经进内存；文件里只有 AES 密文、没有密钥，下载本身不泄露任何内容。
    两条线路竞速：国内可达的 CDN 为主，同域为兜底，谁先下完用谁，另一个立刻取消。
    CDN 地址绑定了包含该 bundle 的固定 commit，缓存不会串到旧版本。 */
+try{history.scrollRestoration='manual'}catch(e){}
 window.__bundleReady=false;window.__bundleBytes=0;window.__bundleTotal=0;window.__bundlePct=0;
 window.__bundleP=(function(){
  var SOURCES=[
@@ -158,7 +159,7 @@ main{position:relative;z-index:1;opacity:0;transition:opacity 1.1s}main.ready{op
 .map-progress span{display:block;height:100%;width:0;background:linear-gradient(90deg,rgba(176,164,255,.4),#e2e4ff);box-shadow:0 0 10px rgba(190,182,255,.7);transition:width .15s linear}
 .map-progress b{position:absolute;right:0;top:-22px;font:8px var(--mono);letter-spacing:.14em;color:#8f92bb;font-weight:400}
 /* ---------- MEMORY PANEL ---------- */
-#memoryPanel{position:fixed;inset:0;z-index:57;background:rgba(3,5,17,.83);backdrop-filter:blur(14px);display:none;align-items:center;justify-content:center;padding:20px}
+#memoryPanel{position:fixed;inset:0;z-index:57;background:rgba(3,5,17,.94);display:none;align-items:center;justify-content:center;padding:20px}
 #memoryPanel.open{display:flex;animation:panelin .35s ease}
 @keyframes panelin{from{opacity:0}to{opacity:1}}
 .memory-card{position:relative;width:min(880px,96vw);max-height:88vh;overflow:auto;background:linear-gradient(145deg,#151832,#0b1026);border:1px solid rgba(196,192,245,.25);display:grid;grid-template-columns:1fr 1fr;grid-template-rows:auto 1fr;box-shadow:0 25px 100px #02030c;animation:cardin .55s var(--ease)}
@@ -174,7 +175,7 @@ main{position:relative;z-index:1;opacity:0;transition:opacity 1.1s}main.ready{op
 .memory-thumbs button.cur{opacity:1;border-color:#fff;box-shadow:0 0 10px rgba(220,225,255,.8)}
 .memory-copy{grid-column:2;grid-row:1/3;padding:55px 42px;display:flex;flex-direction:column;justify-content:center}
 .memory-index{font:9px var(--mono);letter-spacing:.17em;color:#9293bd}.memory-copy h3{font:400 39px var(--serif);margin:22px 0 10px}.memory-date{font:9px var(--mono);letter-spacing:.1em;color:#a6a2d3}.memory-story{font-size:12px;line-height:2.2;color:#c0bfd8;margin-top:25px;white-space:pre-line}
-.close{position:absolute;right:15px;top:15px;width:34px;height:34px;border:1px solid var(--line);background:rgba(7,9,24,.7);color:white;cursor:pointer;z-index:3;transition:.25s}
+.close{position:absolute;right:15px;top:15px;width:34px;height:34px;border:1px solid var(--line);background:rgba(7,9,24,.7);color:white;cursor:pointer;z-index:3;touch-action:manipulation;-webkit-tap-highlight-color:transparent;transition:.25s}
 .close:hover{background:rgba(154,143,226,.3)}
 .memory-controls{display:flex;gap:10px;margin-top:30px}.memory-controls button{background:transparent;border:1px solid var(--line);color:#d7d4f2;padding:9px 13px;font:9px var(--mono);cursor:pointer;transition:.25s}
 .memory-controls button:hover{background:rgba(116,108,180,.2)}
@@ -185,7 +186,7 @@ main{position:relative;z-index:1;opacity:0;transition:opacity 1.1s}main.ready{op
 .end{min-height:65vh;display:grid;place-items:center;text-align:center;position:relative;overflow:hidden}.end:before,.end:after{content:"";position:absolute;width:min(70vw,700px);height:180px;border:1px solid rgba(174,172,235,.2);border-radius:50%;transform:rotate(-18deg)}.end:after{transform:rotate(23deg);width:min(80vw,820px);height:250px;border-color:rgba(142,170,223,.13)}.end h2{position:relative;font:italic 400 clamp(44px,8vw,90px) var(--serif);margin:0}.end p{position:relative;font:12px/2.2 var(--serif);color:#a7a6c9}
 footer{position:relative;z-index:1;border-top:1px solid rgba(180,180,230,.13);padding:22px 5vw 35px;display:flex;justify-content:space-between;color:#6f729d;font:8px var(--mono);letter-spacing:.13em}
 /* ---------- DRAWER DIRECTORY ---------- */
-#drawerBackdrop{position:fixed;inset:0;z-index:52;background:rgba(3,4,14,.6);backdrop-filter:blur(4px);opacity:0;pointer-events:none;transition:opacity .4s}
+#drawerBackdrop{position:fixed;inset:0;z-index:52;background:rgba(3,4,14,.78);opacity:0;pointer-events:none;transition:opacity .4s}
 #drawerBackdrop.open{opacity:1;pointer-events:auto}
 #drawer{position:fixed;z-index:53;top:0;right:0;bottom:0;width:min(420px,92vw);background:linear-gradient(160deg,#12152e,#0a0d20);border-left:1px solid rgba(196,192,245,.22);transform:translateX(102%);transition:transform .55s var(--ease);overflow-y:auto;padding:30px 28px 40px}
 #drawer.open{transform:none}
@@ -741,11 +742,22 @@ function tone(k,yn,spark){
  return {start:start,burst:function(){burstAt=performance.now()},isReady:function(){return ready}};
 })();
 
+/* 进入时永远从最上面的星球页面开始：禁用浏览器滚动恢复，并瞬间回顶 */
+function goTop(){
+ try{
+  const de=document.documentElement,old=de.style.scrollBehavior;
+  de.style.scrollBehavior='auto';
+  if(location.hash)history.replaceState(null,'',location.pathname+location.search);
+  window.scrollTo(0,0);de.scrollTop=0;document.body.scrollTop=0;
+  de.style.scrollBehavior=old;
+ }catch(e){}
+}
 function enterSite(){
  if(bursting)return;bursting=true;IntroFX.burst();
  document.getElementById('intro').classList.add('hide');
  document.getElementById('main').classList.add('ready');
  document.body.classList.remove('locked');
+ goTop();
  setTimeout(()=>{const el=document.getElementById('intro');if(el)el.remove()},1500);
  setTimeout(()=>animateCount(),700);
  /* 背景音乐由 loadSong() 解密完成后启动，这里不再抢跑 */
@@ -871,8 +883,11 @@ function openMemory(i){
  else{ph.style.display='';photo.style.display='none'}
  panel.classList.add('open');panel.dataset.index=i}
 function stepMemory(d){const i=Number(document.getElementById('memoryPanel').dataset.index);openMemory((i+d+memories.length)%memories.length)}
-document.getElementById('closeMemory').onclick=()=>document.getElementById('memoryPanel').classList.remove('open');
-document.getElementById('memoryPanel').onclick=e=>{if(e.target.id==='memoryPanel')e.currentTarget.classList.remove('open')};
+function shutMemory(){const p=document.getElementById('memoryPanel');if(p.classList.contains('open'))p.classList.remove('open')}
+const closeMem=document.getElementById('closeMemory');
+closeMem.addEventListener('pointerdown',shutMemory);
+closeMem.addEventListener('click',shutMemory);
+document.getElementById('memoryPanel').onclick=e=>{if(e.target.id==='memoryPanel')shutMemory()};
 document.getElementById('prevMemory').onclick=()=>stepMemory(-1);
 document.getElementById('nextMemory').onclick=()=>stepMemory(1);
 addEventListener('keydown',e=>{
@@ -1178,6 +1193,7 @@ window.OrbitMusic=(function(){
    await Promise.all(jobs);
    /* 此刻 45 张照片全部就位、原曲已在播 —— 直接开始 */
    renderStars();restore();renderAlbumCovers();
+   goTop();
    IntroFX.start();
    setMsg('好啦，只属于我们的一年 ♥');
    setTimeout(()=>{L.classList.add('gone');setTimeout(()=>L.remove(),1000)},380);
