@@ -717,20 +717,55 @@ function fetchBin(url,timeout){
   .then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.arrayBuffer()})
   .finally(()=>clearTimeout(timer));
 }
-/* AES-GCM 解密 + 有限重试；暗号错（OperationError）不重试 */
+/* AES-GCM 解密：IV(12) | TAG(16) | CIPHERTEXT */
+async function decryptBuffer(v,mime){
+ const a=new Uint8Array(v);
+ const iv=a.slice(0,12),tag=a.slice(12,28),ct=a.slice(28);
+ const data=new Uint8Array(ct.length+16);data.set(ct);data.set(tag,ct.length);
+ const plain=await crypto.subtle.decrypt({name:'AES-GCM',iv:iv},MEDIA_KEY,data);
+ return new Blob([plain],{type:mime||'application/octet-stream'});
+}
+/* 普通文件：下载 + 解密 + 有限重试；暗号错（OperationError）不重试 */
 async function decToBlob(url,mime,timeout,tries){
  let last;
  for(let a=0;a<(tries||3);a++){
-  try{
-   const v=new Uint8Array(await fetchBin(url,timeout));
-   const iv=v.slice(0,12),tag=v.slice(12,28),ct=v.slice(28);
-   const data=new Uint8Array(ct.length+16);data.set(ct);data.set(tag,ct.length);
-   const plain=await crypto.subtle.decrypt({name:'AES-GCM',iv:iv},MEDIA_KEY,data);
-   return new Blob([plain],{type:mime||'application/octet-stream'});
-  }catch(e){last=e;if(e&&e.name==='OperationError')throw e;
+  try{return await decryptBuffer(await fetchBin(url,timeout),mime)}
+  catch(e){last=e;if(e&&e.name==='OperationError')throw e;
    await new Promise(r=>setTimeout(r,350*(a+1)))}
  }
  throw last;
+}
+/* 单段 Range 请求，带超时 */
+function fetchRange(url,s,e,timeout){
+ const ctrl=new AbortController(),t=setTimeout(()=>ctrl.abort(),timeout||45000);
+ return fetch(url,{headers:{Range:'bytes='+s+'-'+e},signal:ctrl.signal})
+  .then(r=>{if(r.status!==206)throw new Error('range '+r.status);return r.arrayBuffer()})
+  .finally(()=>clearTimeout(t));
+}
+/* 大文件分段并发下载：单连接很慢时显著提速，不支持 Range 则退回整段下载 */
+async function fetchSong(){
+ const url='assets/enc/song.bin';
+ try{
+  const head=await fetch(url,{headers:{Range:'bytes=0-0'}});
+  const cr=head.headers.get('Content-Range');
+  if(head.status!==206||!cr)throw new Error('no range');
+  const total=Number(cr.split('/')[1]);if(!(total>0))throw new Error('bad length');
+  const parts=6,chunk=Math.ceil(total/parts);
+  const bufs=await Promise.all(Array.from({length:parts},async(_,i)=>{
+   const s=i*chunk,e=Math.min(total-1,s+chunk-1);
+   if(s>=total)return new ArrayBuffer(0);
+   let last;
+   for(let k=0;k<3;k++){
+    try{return await fetchRange(url,s,e)}
+    catch(err){last=err;await new Promise(r=>setTimeout(r,500*(k+1)))}
+   }
+   throw last;
+  }));
+  const out=new Uint8Array(total);let off=0;
+  bufs.forEach(b=>{out.set(new Uint8Array(b),off);off+=b.byteLength});
+  if(off!==total)throw new Error('short read '+off+'/'+total);
+  return out.buffer;
+ }catch(e){return await fetchBin(url,60000)}
 }
 /* 全量补齐顺序：先首星、封面、各星首图，再其余 */
 function mediaOrder(){
@@ -775,7 +810,7 @@ function pumpRest(){
 }
 function loadSong(attempt){
  attempt=attempt||0;
- decToBlob('assets/enc/song.bin','audio/mp4',60000,1).then(blob=>{
+ fetchSong().then(buf=>decryptBuffer(buf,'audio/mp4')).then(blob=>{
   if(window.OrbitMusic)OrbitMusic.startWith(URL.createObjectURL(blob));
   pumpRest();
  }).catch(()=>{
