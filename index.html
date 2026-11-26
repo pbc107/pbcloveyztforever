@@ -698,7 +698,7 @@ const FIXED_DAYS=365; /* 一周年固定 365 天，不按日期实时计算 */
 /* ============ 媒体：密文后台解密，加载绝不阻塞进入 ============ */
 const MEDIA={},BLANK_IMG='data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 const MEDIA_LOADING={},MEDIA_FAILED={};
-let MEDIA_KEY=null,mediaQueue=[],mediaRunning=0;
+let MEDIA_KEY=null,mediaQueue=[],mediaRunning=0,restPumped=false;
 const purl=n=>MEDIA[n]||BLANK_IMG;
 /* 给引用照片的 <img> 打标记，解密完成后统一回填 */
 function bindMedia(img,n){img.dataset.mid=String(n);img.src=purl(n)}
@@ -767,11 +767,21 @@ function ensureMedia(list){
              ...mediaQueue.filter(n=>!set.has(String(n)))];
  pumpMedia();
 }
+function pumpRest(){
+ if(!MEDIA_KEY||restPumped)return;restPumped=true;
+ mediaOrder().filter(n=>!MEDIA[n]).forEach(n=>{
+  if(mediaQueue.indexOf(n)<0&&!MEDIA_LOADING[n])mediaQueue.push(n)});
+ pumpMedia();
+}
 function loadSong(attempt){
  attempt=attempt||0;
- decToBlob('assets/enc/song.bin','audio/mp4',45000,2).then(blob=>{
+ decToBlob('assets/enc/song.bin','audio/mp4',60000,1).then(blob=>{
   if(window.OrbitMusic)OrbitMusic.startWith(URL.createObjectURL(blob));
- }).catch(()=>{if(attempt<2)setTimeout(()=>loadSong(attempt+1),6000)});
+  pumpRest();
+ }).catch(()=>{
+  if(attempt<2)setTimeout(()=>loadSong(attempt+1),6000);
+  else pumpRest();
+ });
 }
 function loadAllMedia(){
  /* 首屏只预载最可能马上看到的：前 3 颗星 + 相册封面 */
@@ -780,14 +790,10 @@ function loadAllMedia(){
  memories.slice(0,3).forEach(m=>(m.photos||[]).forEach(push));
  albums.forEach(a=>(a.photos||[]).forEach(push));
  mediaQueue=first.filter(n=>!MEDIA[n]);pumpMedia();
- /* 稍后再在后台补齐其余，不抢首屏带宽 */
- setTimeout(()=>{
-  if(!MEDIA_KEY)return;
-  mediaOrder().filter(n=>!MEDIA[n]).forEach(n=>{
-   if(mediaQueue.indexOf(n)<0&&!MEDIA_LOADING[n])mediaQueue.push(n)});
-  pumpMedia();
- },9000);
- setTimeout(loadSong,2200);
+ /* 音乐优先：先只下首屏几张图，音乐就绪后再补齐其余照片，避免抢带宽 */
+ setTimeout(loadSong,700);
+ /* 兜底：音乐长时间下不来也别让照片一直缺 */
+ setTimeout(pumpRest,22000);
 }
 let memories=[]; /* 22 段故事加密在 assets/enc/stories.bin，开锁后注入 */
 /* 相册板块：严格按文档，其余板块暂不放照片 */
