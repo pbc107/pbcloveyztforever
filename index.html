@@ -5,23 +5,50 @@
 <meta name="theme-color" content="#070918"><meta name="robots" content="noindex,nofollow,noarchive"><title>我们一周年啦 · A year in orbit</title>
 <script>
 /* 密文包：HTML 一开始解析就发起下载。用户看锁页、输入暗号的那几秒里，
-   全部密文已经进内存；文件里只有 AES 密文、没有密钥，下载本身不泄露任何内容。 */
+   全部密文已经进内存；文件里只有 AES 密文、没有密钥，下载本身不泄露任何内容。
+   两条线路竞速：国内可达的 CDN 为主，同域为兜底，谁先下完用谁，另一个立刻取消。
+   CDN 地址绑定了包含该 bundle 的固定 commit，缓存不会串到旧版本。 */
 window.__bundleReady=false;window.__bundleBytes=0;window.__bundleTotal=0;window.__bundlePct=0;
 window.__bundleP=(function(){
- var U='assets/enc/bundle.bin?v=2';
- async function once(){
-  var r=await fetch(U,{cache:'force-cache'});
+ var SOURCES=[
+  'https://cdn.jsdelivr.net/gh/pbc107/pbcloveyztforever@40e35c8711ace8a2f1a686becf0d422fd12bdaad/assets/enc/bundle.bin',
+  'assets/enc/bundle.bin?v=2'
+ ];
+ async function fetchOne(url,ctl,report){
+  var r=await fetch(url,{signal:ctl.signal,cache:'force-cache'});
   if(!r.ok)throw new Error('HTTP '+r.status);
-  var total=Number(r.headers.get('content-length')||0);window.__bundleTotal=total;
+  var total=Number(r.headers.get('content-length')||0);
+  if(!window.__bundleTotal)window.__bundleTotal=total;
+  function bump(got){
+   var pct=total?Math.min(99,Math.round(got/total*100)):0;
+   window.__bundleBytes=Math.max(window.__bundleBytes,got);
+   window.__bundlePct=Math.max(window.__bundlePct,pct);
+  }
   if(r.body&&r.body.getReader){
    var rd=r.body.getReader(),chunks=[],got=0;
-   for(;;){var d=await rd.read();if(d.done)break;chunks.push(d.value);got+=d.value.length;
-    window.__bundleBytes=got;window.__bundlePct=total?Math.min(99,Math.round(got/total*100)):0}
+   for(;;){var d=await rd.read();if(d.done)break;chunks.push(d.value);got+=d.value.length;bump(got)}
    var all=new Uint8Array(got),p=0;
    for(var j=0;j<chunks.length;j++){all.set(chunks[j],p);p+=chunks[j].length}
    return all.buffer;
   }
-  var ab=await r.arrayBuffer();window.__bundleBytes=ab.byteLength;return ab;
+  var ab=await r.arrayBuffer();bump(ab.byteLength);return ab;
+ }
+ function firstOf(ps){
+  return new Promise(function(res,rej){
+   var failed=0,settled=false;
+   ps.forEach(function(p){
+    p.then(function(v){if(!settled){settled=true;res(v)}})
+     .catch(function(){failed++;if(!settled&&failed===ps.length){settled=true;rej(new Error('all sources failed'))}});
+   });
+  });
+ }
+ async function once(){
+  var cs=[new AbortController(),new AbortController()];
+  var ps=[fetchOne(SOURCES[0],cs[0],true),fetchOne(SOURCES[1],cs[1],false)];
+  var ab;
+  try{ab=await firstOf(ps)}
+  finally{cs.forEach(function(c){try{c.abort()}catch(e){}})}
+  return ab;
  }
  return (async function(){
   var last;
