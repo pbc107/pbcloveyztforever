@@ -684,7 +684,7 @@ function enterSite(){
  document.body.classList.remove('locked');
  setTimeout(()=>{const el=document.getElementById('intro');if(el)el.remove()},1500);
  setTimeout(()=>animateCount(),700);
- if(window.OrbitMusic)OrbitMusic.start();
+ /* 背景音乐由 loadSong() 解密完成后启动，这里不再抢跑 */
 }
 document.getElementById('enterBtn').onclick=e=>{e.stopPropagation();enterSite()};
 document.getElementById('intro').onclick=()=>{if(IntroFX.isReady())enterSite()};
@@ -696,7 +696,60 @@ orbit=document.getElementById('orbitLine'),comet=document.getElementById('comet'
 const DEFAULT_DATE='2025-12-12';
 const FIXED_DAYS=365; /* 一周年固定 365 天，不按日期实时计算 */
 const MEDIA={},BLANK_IMG='data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
-const purl=n=>MEDIA[n]||BLANK_IMG; /* 明文照片不上传，开锁后注入解密后的 Blob URL */
+const purl=n=>MEDIA[n]||BLANK_IMG;
+/* 媒体加载：暗号一验证就放行，照片与音乐在开场动画期间全速就位；单个请求失败只重试自己，绝不阻塞进入 */
+let MEDIA_KEY=null,mediaQueue=[],mediaRunning=0;
+const MEDIA_PENDING=new Set();
+function applyMedia(n){
+ const u=MEDIA[n];if(!u)return;
+ document.querySelectorAll('img[data-mid="'+n+'"]').forEach(im=>{if(im.src!==u)im.src=u});
+}
+function fetchBin(url,ms){
+ const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),ms||30000);
+ return fetch(url,{signal:ctrl.signal}).then(r=>{
+  if(!r.ok)throw new Error('HTTP '+r.status);return r.arrayBuffer();
+ }).finally(()=>clearTimeout(timer));
+}
+async function decBin(url,mime,ms){
+ const v=new Uint8Array(await fetchBin(url,ms||30000));
+ const iv=v.slice(0,12),tag=v.slice(12,28),ct=v.slice(28);
+ const data=new Uint8Array(ct.length+16);data.set(ct);data.set(tag,ct.length);
+ const plain=await crypto.subtle.decrypt({name:'AES-GCM',iv:iv},MEDIA_KEY,data);
+ return new Blob([plain],{type:mime||'application/octet-stream'});
+}
+async function decRetry(url,mime,ms){
+ let last;
+ for(let a=0;a<4;a++){
+  try{return await decBin(url,mime,ms)}
+  catch(e){last=e;if(e&&e.name==='OperationError')throw e;await new Promise(r=>setTimeout(r,450*(a+1)))}
+ }
+ throw last||new Error('media failed');
+}
+function pumpMedia(){
+ while(mediaRunning<4&&mediaQueue.length){
+  const n=mediaQueue.shift();
+  if(MEDIA[n]||MEDIA_PENDING.has(n))continue;
+  MEDIA_PENDING.add(n);mediaRunning++;
+  decRetry('assets/enc/image'+n+'.bin','image/jpeg',30000).then(blob=>{
+   MEDIA[n]=URL.createObjectURL(blob);applyMedia(n);
+  }).catch(()=>{
+   setTimeout(()=>{if(!MEDIA[n]&&!MEDIA_PENDING.has(n)){mediaQueue.unshift(n);pumpMedia()}},4000);
+  }).finally(()=>{MEDIA_PENDING.delete(n);mediaRunning--;pumpMedia()});
+ }
+}
+async function loadSong(){
+ try{
+  const blob=await decRetry('assets/enc/song.bin','audio/mp4',60000);
+  window.__songReady=true;
+  if(window.OrbitMusic)OrbitMusic.startWith(URL.createObjectURL(blob));
+ }catch(e){setTimeout(loadSong,6000)}
+}
+function loadAllMedia(){
+ loadSong();                       /* 原曲优先，解开即自动淡入 */
+ mediaQueue=[];
+ for(let i=1;i<=45;i++)if(!MEDIA[i])mediaQueue.push(i);
+ pumpMedia();                      /* 45 张照片全速并发，解开一张回填一张 */
+}
 let memories=[]; /* 22 段故事加密在 assets/enc/stories.bin，开锁后注入 */
 /* 相册板块：严格按文档，其余板块暂不放照片 */
 let albums=[
@@ -770,12 +823,12 @@ function openMemory(i){
  if(list.length>1)thumbs.classList.add('has');else thumbs.classList.remove('has');
  if(list.length){
   ph.style.display='none';photo.style.display='';
-  photo.src=purl(list[0]);photo.alt=m.title;
+  photo.dataset.mid=list[0];photo.src=purl(list[0]);photo.alt=m.title;
   list.forEach((n,k)=>{const b=document.createElement('button');
    if(k===0)b.className='cur';
-   const im=document.createElement('img');im.src=purl(n);im.alt='';
+   const im=document.createElement('img');im.dataset.mid=n;im.src=purl(n);im.alt='';
    b.appendChild(im);
-   b.onclick=()=>{photo.src=purl(n);thumbs.querySelectorAll('button').forEach(x=>x.classList.remove('cur'));b.classList.add('cur')};
+   b.onclick=()=>{photo.dataset.mid=n;photo.src=purl(n);thumbs.querySelectorAll('button').forEach(x=>x.classList.remove('cur'));b.classList.add('cur')};
    thumbs.appendChild(b)})}
  else{ph.style.display='';photo.style.display='none'}
  panel.classList.add('open');panel.dataset.index=i}
@@ -807,14 +860,14 @@ function renderAlbumCovers(){
   el.querySelectorAll('img[data-cover]').forEach(x=>x.remove());
   const al=albums[Number(el.dataset.album)];
   if(al&&al.photos.length){
-   const im=document.createElement('img');im.dataset.cover='1';im.src=purl(al.photos[0]);im.alt=al.name;el.prepend(im)}
+   const im=document.createElement('img');im.dataset.cover='1';im.dataset.mid=al.photos[0];im.src=purl(al.photos[0]);im.alt=al.name;el.prepend(im)}
  });
 }
 document.querySelectorAll('.photo').forEach(el=>{
  el.onclick=()=>{const al=albums[Number(el.dataset.album)];if(!al||!al.photos.length)return;curAlbum=Number(el.dataset.album);curPhoto=0;showPhoto()}});
 function showPhoto(){
  const al=albums[curAlbum];
- viewer.querySelector('img').src=purl(al.photos[curPhoto]);
+ const vimg=viewer.querySelector('img');vimg.dataset.mid=al.photos[curPhoto];vimg.src=purl(al.photos[curPhoto]);
  document.getElementById('viewerCount').textContent=`${al.name} · ${curPhoto+1} / ${al.photos.length}`;
  viewer.classList.add('open')}
 function stepPhoto(d){const al=albums[curAlbum];curPhoto=(curPhoto+d+al.photos.length)%al.photos.length;showPhoto()}
@@ -1045,20 +1098,12 @@ window.OrbitMusic=(function(){
  const salt=new Uint8Array(SALT_HEX.match(/../g).map(h=>parseInt(h,16)));
  const L=document.getElementById('lockScreen'),inp=document.getElementById('lockInput'),
    go=document.getElementById('lockGo'),msg=document.getElementById('lockMsg');
- let key=null,busy=false;
+ let busy=false;
  const enc=new TextEncoder();
  async function derive(pass){
   const km=await crypto.subtle.importKey('raw',enc.encode(pass),'PBKDF2',false,['deriveKey']);
   return crypto.subtle.deriveKey({name:'PBKDF2',salt:salt,iterations:ITER,hash:'SHA-256'},km,
    {name:'AES-GCM',length:256},false,['decrypt']);
- }
- async function dec(url,mime){
-  const r=await fetch(url);if(!r.ok)throw new Error('HTTP '+r.status);
-  const v=new Uint8Array(await r.arrayBuffer());
-  const iv=v.slice(0,12),tag=v.slice(12,28),ct=v.slice(28);
-  const data=new Uint8Array(ct.length+16);data.set(ct);data.set(tag,ct.length);
-  const plain=await crypto.subtle.decrypt({name:'AES-GCM',iv:iv},key,data);
-  return URL.createObjectURL(new Blob([plain],{type:mime}));
  }
  function setMsg(t,bad){msg.textContent=t;msg.classList.toggle('bad',!!bad)}
  async function unlock(){
@@ -1066,26 +1111,19 @@ window.OrbitMusic=(function(){
   if(!pass){setMsg('先输入暗号呀',true);return}
   busy=true;go.disabled=true;setMsg('正在展开我们的回忆…');
   try{
-   key=await derive(pass);
-   /* 先解最小的 stories.bin 校验暗号：错了立刻停，不浪费流量 */
-   const storyUrl=await dec('assets/enc/stories.bin','application/json');
-   const stories=JSON.parse(await (await fetch(storyUrl)).text());
-   memories=stories;renderStars();restore();
-   for(let s=1;s<=45;s+=6){
-    const batch=[];for(let i=s;i<=Math.min(45,s+5);i++)batch.push(i);
-    await Promise.all(batch.map(async i=>{MEDIA[i]=await dec('assets/enc/image'+i+'.bin','image/jpeg')}));
-    setMsg('正在展开我们的回忆… '+Math.round(Math.min(45,s+5)/45*100)+'%');
-   }
-   const song=await dec('assets/enc/song.bin','audio/mp4');
-   setMsg('好啦，只属于我们的一年 ♥');
-   renderAlbumCovers();
+   MEDIA_KEY=await derive(pass);
+   /* 只等 6.5KB 的 stories.bin 校验暗号，随后立刻放行 */
+   const storyBlob=await decRetry('assets/enc/stories.bin','application/json',15000);
+   memories=JSON.parse(await storyBlob.text());
+   renderStars();restore();renderAlbumCovers();
    IntroFX.start();
-   if(window.OrbitMusic)OrbitMusic.startWith(song);
-   setTimeout(()=>{L.classList.add('gone');setTimeout(()=>L.remove(),1000)},700);
+   setTimeout(()=>{L.classList.add('gone');setTimeout(()=>L.remove(),1000)},380);
+   /* 不 await：开场动画那几秒里把 45 张照片和原曲全速解开，失败自动重试，绝不影响进入 */
+   loadAllMedia();
   }catch(e){
    const wrong=e&&e.name==='OperationError';
-   setMsg(wrong?'暗号不对哦，再想想～':'加载失败，请刷新后重试',true);
-   busy=false;go.disabled=false;
+   setMsg(wrong?'暗号不对哦，再想想～':'网络有点慢，再点一次解锁试试',true);
+   busy=false;go.disabled=false;MEDIA_KEY=null;
    L.classList.remove('shake');void L.offsetWidth;L.classList.add('shake');
   }
  }
