@@ -3,6 +3,37 @@
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#070918"><meta name="robots" content="noindex,nofollow,noarchive"><title>我们一周年啦 · A year in orbit</title>
+<script>
+/* 密文包：HTML 一开始解析就发起下载。用户看锁页、输入暗号的那几秒里，
+   全部密文已经进内存；文件里只有 AES 密文、没有密钥，下载本身不泄露任何内容。 */
+window.__bundleReady=false;window.__bundleBytes=0;window.__bundleTotal=0;window.__bundlePct=0;
+window.__bundleP=(function(){
+ var U='assets/enc/bundle.bin?v=2';
+ async function once(){
+  var r=await fetch(U,{cache:'force-cache'});
+  if(!r.ok)throw new Error('HTTP '+r.status);
+  var total=Number(r.headers.get('content-length')||0);window.__bundleTotal=total;
+  if(r.body&&r.body.getReader){
+   var rd=r.body.getReader(),chunks=[],got=0;
+   for(;;){var d=await rd.read();if(d.done)break;chunks.push(d.value);got+=d.value.length;
+    window.__bundleBytes=got;window.__bundlePct=total?Math.min(99,Math.round(got/total*100)):0}
+   var all=new Uint8Array(got),p=0;
+   for(var j=0;j<chunks.length;j++){all.set(chunks[j],p);p+=chunks[j].length}
+   return all.buffer;
+  }
+  var ab=await r.arrayBuffer();window.__bundleBytes=ab.byteLength;return ab;
+ }
+ return (async function(){
+  var last;
+  for(var a=0;a<3;a++){
+   try{var ab=await once();window.__bundleReady=true;window.__bundlePct=100;return ab}
+   catch(e){last=e;await new Promise(function(r){setTimeout(r,500*(a+1))})}
+  }
+  throw last||new Error('bundle failed');
+ })();
+})();
+window.__bundleP.catch(function(){}); /* 避免未处理的 rejection 报错 */
+</script>
 <style>
 @font-face{font-family:'DM Mono';font-style:normal;font-weight:400;font-display:swap;src:url('assets/fonts/dm-mono-400.woff2') format('woff2')}
 @font-face{font-family:'DM Mono';font-style:normal;font-weight:500;font-display:swap;src:url('assets/fonts/dm-mono-500.woff2') format('woff2')}
@@ -231,6 +262,11 @@ body.locked #musicWidget{opacity:.62;transform:scale(.9)}
 #lockScreen.shake .lock-card{animation:lockShake .42s var(--ease)}
 @keyframes lockShake{0%,100%{transform:translateX(0)}20%{transform:translateX(-9px)}40%{transform:translateX(8px)}60%{transform:translateX(-5px)}80%{transform:translateX(4px)}}
 @media(max-width:420px){.lock-card{padding:36px 20px 30px}.lock-row{flex-direction:column}#lockInput{max-width:none}#lockGo{width:100%}}
+
+ #lockBar{height:2px;width:min(100%,260px);margin:14px auto 0;border-radius:2px;
+  background:rgba(226,197,208,.14);overflow:hidden;opacity:0;transition:opacity .3s}
+ #lockBar i{display:block;height:100%;width:0;background:linear-gradient(90deg,#ffd6c6,#e29eb4);transition:width .25s}
+ #lockScreen.busy #lockBar{opacity:1}
 </style></head>
 <body class="locked">
 <canvas id="dust"></canvas><div class="noise"></div>
@@ -338,6 +374,7 @@ body.locked #musicWidget{opacity:.62;transform:scale(.9)}
   <p>输入我们的暗号，展开这一年。</p>
   <div class="lock-row"><input id="lockInput" type="password" inputmode="numeric" autocomplete="off" placeholder="· · · · · · · · ·"><button id="lockGo">解锁</button></div>
   <div id="lockMsg" class="lock-msg"></div>
+   <div id="lockBar"><i></i></div>
   <div class="lock-foot">PBC <span>&#9829;</span> YZT · 365 DAYS</div>
  </div>
 </div>
@@ -697,107 +734,32 @@ const DEFAULT_DATE='2025-12-12';
 const FIXED_DAYS=365; /* 一周年固定 365 天，不按日期实时计算 */
 const MEDIA={},BLANK_IMG='data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 const purl=n=>MEDIA[n]||BLANK_IMG;
-let MEDIA_KEY=null;
-/* 密文预取：页面一打开就静默下载到内存（纯密文、无密钥，不泄露任何内容）。
-   用户输暗号的那几秒里文件已备好，解锁后只剩解密，几乎瞬时。 */
-const PREFETCH={},PREFETCH_BUSY={};
-const ENC_URLS=(function(){
- const a=['assets/enc/song.bin','assets/enc/stories.bin']; /* 原曲优先 */
- for(let i=1;i<=45;i++)a.push('assets/enc/image'+i+'.bin');
- return a;
-})();
-let prefQueue=[],prefRunning=0;
+let MEDIA_KEY=null,BUNDLE=null,BUNDLE_HDR=null,BUNDLE_BASE=0;
 function applyMedia(n){
  const u=MEDIA[n];if(!u)return;
  document.querySelectorAll('img[data-mid="'+n+'"]').forEach(im=>{if(im.src!==u)im.src=u});
 }
-function fetchBin(url,ms){
- const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),ms||45000);
- return fetch(url,{signal:ctrl.signal}).then(r=>{
-  if(!r.ok)throw new Error('HTTP '+r.status);return r.arrayBuffer();
- }).finally(()=>clearTimeout(timer));
+/* 密文包在解锁前已下载到内存：这里只解析索引，绝不发网络请求 */
+async function bundleReady(){
+ if(BUNDLE)return;
+ const ab=await window.__bundleP;
+ if(BUNDLE)return;
+ const u8=new Uint8Array(ab);
+ const hl=new DataView(ab).getUint32(0,true);
+ BUNDLE_HDR=JSON.parse(new TextDecoder().decode(u8.subarray(4,4+hl)));
+ BUNDLE_BASE=4+hl;BUNDLE=ab;
 }
-async function getBin(url,ms){
- if(PREFETCH[url])return PREFETCH[url];
- const ab=await fetchBin(url,ms||45000);PREFETCH[url]=ab;return ab;
+function sliceOf(key){
+ const e=BUNDLE_HDR[key];if(!e)throw new Error('missing '+key);
+ return new Uint8Array(BUNDLE,BUNDLE_BASE+e[0],e[1]);
 }
-async function decBin(url,mime,ms){
- const v=new Uint8Array(await getBin(url,ms));
+async function decName(key,mime){
+ await bundleReady();
+ const v=sliceOf(key);
  const iv=v.slice(0,12),tag=v.slice(12,28),ct=v.slice(28);
  const data=new Uint8Array(ct.length+16);data.set(ct);data.set(tag,ct.length);
  const plain=await crypto.subtle.decrypt({name:'AES-GCM',iv:iv},MEDIA_KEY,data);
  return new Blob([plain],{type:mime||'application/octet-stream'});
-}
-async function decRetry(url,mime,ms){
- let last;
- for(let a=0;a<4;a++){
-  try{return await decBin(url,mime,ms)}
-  catch(e){last=e;if(e&&e.name==='OperationError')throw e;await new Promise(r=>setTimeout(r,400*(a+1)))}
- }
- throw last||new Error('media failed');
-}
-async function prefetchOne(url){
- if(PREFETCH[url]||PREFETCH_BUSY[url])return;
- PREFETCH_BUSY[url]=1;
- for(let a=0;a<3;a++){
-  try{PREFETCH[url]=await fetchBin(url,90000);break}
-  catch(e){await new Promise(r=>setTimeout(r,600*(a+1)))}
- }
- delete PREFETCH_BUSY[url];
-}
-function pumpPrefetch(){
- while(prefRunning<6&&prefQueue.length){
-  const u=prefQueue.shift();if(PREFETCH[u]||PREFETCH_BUSY[u])continue;
-  prefRunning++;prefetchOne(u).finally(()=>{prefRunning--;pumpPrefetch()});
- }
-}
-setTimeout(()=>{prefQueue=ENC_URLS.slice();pumpPrefetch()},120);
-
-/* 解锁后一次性解开全部媒体；限并发 + 独立重试，返回「全部就绪」的 Promise */
-let mediaQueue=[],mediaRunning=0,mediaWaiters=[];
-function mediaFinished(){
- if(!mediaQueue.length&&!mediaRunning)mediaWaiters.splice(0).forEach(f=>f());
-}
-function pumpMedia(){
- while(mediaRunning<6&&mediaQueue.length){
-  const n=mediaQueue.shift();
-  if(MEDIA[n])continue;
-  mediaRunning++;
-  decRetry('assets/enc/image'+n+'.bin','image/jpeg',45000).then(blob=>{
-   MEDIA[n]=URL.createObjectURL(blob);applyMedia(n);
-  }).catch(()=>{
-   setTimeout(()=>{if(!MEDIA[n]){mediaQueue.push(n);pumpMedia()}},3000);
-  }).finally(()=>{mediaRunning--;pumpMedia();mediaFinished()});
- }
- mediaFinished();
-}
-function mediaDone(){
- return new Promise(res=>{
-  const chk=()=>{
-   let ok=0;for(let i=1;i<=45;i++)if(MEDIA[i])ok++;
-   if(ok===45)return res();
-   setTimeout(chk,300);
-  };chk();
- });
-}
-function songDone(){
- return new Promise(res=>{
-  const c=()=>window.__songReady?res():setTimeout(c,300);c();
- });
-}
-async function loadSong(){
- try{
-  const blob=await decRetry('assets/enc/song.bin','audio/mp4',90000);
-  window.__songReady=true;
-  if(window.OrbitMusic)OrbitMusic.startWith(URL.createObjectURL(blob));
- }catch(e){setTimeout(loadSong,4000)}
-}
-function decodeAll(){
- loadSong();                            /* 原曲优先，解开即淡入 */
- mediaQueue=[];
- for(let i=1;i<=45;i++)if(!MEDIA[i])mediaQueue.push(i);
- pumpMedia();
- return Promise.all([songDone(),mediaDone()]);
 }
 let memories=[]; /* 22 段故事加密在 assets/enc/stories.bin，开锁后注入 */
 /* 相册板块：严格按文档，其余板块暂不放照片 */
@@ -1146,7 +1108,8 @@ window.OrbitMusic=(function(){
  const SALT_HEX='a7c31f9e42b86d50f1c3e97a2b6d84f0',ITER=120000;
  const salt=new Uint8Array(SALT_HEX.match(/../g).map(h=>parseInt(h,16)));
  const L=document.getElementById('lockScreen'),inp=document.getElementById('lockInput'),
-   go=document.getElementById('lockGo'),msg=document.getElementById('lockMsg');
+   go=document.getElementById('lockGo'),msg=document.getElementById('lockMsg'),
+   bar=L.querySelector('#lockBar i');
  let busy=false;
  const enc=new TextEncoder();
  async function derive(pass){
@@ -1155,35 +1118,50 @@ window.OrbitMusic=(function(){
    {name:'AES-GCM',length:256},false,['decrypt']);
  }
  function setMsg(t,bad){msg.textContent=t;msg.classList.toggle('bad',!!bad)}
+ /* 密文包就绪前按钮不可点：所有等待都发生在解锁之前，解开之后不再等任何下载 */
+ go.disabled=true;L.classList.add('busy');
+ const readyTick=setInterval(()=>{
+  const p=window.__bundlePct||0;
+  if(bar)bar.style.width=p+'%';
+  if(!window.__bundleReady)setMsg('正在把回忆装进星星里… '+p+'%');
+  else{clearInterval(readyTick);if(bar)bar.style.width='100%';go.disabled=false;
+   setTimeout(()=>{setMsg('');L.classList.remove('busy');try{inp.focus()}catch(e){}},300)}
+ },150);
+ window.__bundleP.catch(()=>{clearInterval(readyTick);go.disabled=false;L.classList.remove('busy');setMsg('网络有点慢，下拉刷新再试试',true)});
  async function unlock(){
   if(busy)return;const pass=(inp.value||'').trim();
   if(!pass){setMsg('先输入暗号呀',true);return}
-  busy=true;go.disabled=true;setMsg('正在展开我们的回忆…');
+  busy=true;go.disabled=true;
   try{
+   /* 到这里密文包早已 100% 就绪；以下全部是内存操作，零网络等待 */
+   await bundleReady();
    MEDIA_KEY=await derive(pass);
-   /* 先用 6.5KB 的 stories.bin 验证暗号 */
-   const storyBlob=await decRetry('assets/enc/stories.bin','application/json',15000);
+   const storyBlob=await decName('stories','application/json'); /* 校验暗号 */
    memories=JSON.parse(await storyBlob.text());
-   renderStars();restore();
-   /* 关键：等 45 张照片 + 原曲全部解开、音乐起播后才放开画面，
-      锁页显示实时进度；任一文件失败只重试自己，绝不提前放出空白页面。 */
-   const prog=setInterval(()=>{
-    let ok=0;for(let i=1;i<=45;i++)if(MEDIA[i])ok++;
-    setMsg(ok>=45?'好啦，只属于我们的一年 ♥':'正在点亮我们的星星… '+ok+'/45');
-   },350);
-   try{await decodeAll()}finally{clearInterval(prog);setMsg('好啦，只属于我们的一年 ♥')}
-   renderAlbumCovers();
+   setMsg('正在展开我们的回忆…');
+   const jobs=[];
+   for(let i=1;i<=45;i++)jobs.push(decName(String(i),'image/jpeg').then(b=>{
+    MEDIA[i]=URL.createObjectURL(b);applyMedia(i);
+   }));
+   jobs.push(decName('song','audio/mp4').then(b=>{
+    const u=URL.createObjectURL(b);
+    window.__songReady=true;
+    if(window.OrbitMusic)OrbitMusic.startWith(u);
+   }));
+   await Promise.all(jobs);
+   /* 此刻 45 张照片全部就位、原曲已在播 —— 直接开始 */
+   renderStars();restore();renderAlbumCovers();
    IntroFX.start();
+   setMsg('好啦，只属于我们的一年 ♥');
    setTimeout(()=>{L.classList.add('gone');setTimeout(()=>L.remove(),1000)},380);
   }catch(e){
    const wrong=e&&e.name==='OperationError';
-   setMsg(wrong?'暗号不对哦，再想想～':'网络有点慢，再点一次解锁试试',true);
+   setMsg(wrong?'暗号不对哦，再想想～':'出了点小状况，再点一次解锁试试',true);
    busy=false;go.disabled=false;MEDIA_KEY=null;
    L.classList.remove('shake');void L.offsetWidth;L.classList.add('shake');
   }
  }
  go.onclick=unlock;
  inp.addEventListener('keydown',e=>{if(e.key==='Enter')unlock()});
- setTimeout(()=>{try{inp.focus()}catch(e){}},400);
 })();
 </script></body></html>
