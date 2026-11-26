@@ -712,7 +712,7 @@ function applyMedia(n){
 }
 /* 带超时的下载：任意单个请求挂住都不会拖死整页 */
 function fetchBin(url,timeout){
- const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),timeout||15000);
+ const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),timeout||40000);
  return fetch(url,{signal:ctrl.signal})
   .then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.arrayBuffer()})
   .finally(()=>clearTimeout(timer));
